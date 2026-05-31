@@ -6,10 +6,32 @@ from datetime import datetime
 
 try:
     import FinanceDataReader as fdr
-    FDR_OK = True
+    FDR_OK = TrueS
 except:
     FDR_OK = False
 
+# ── 비밀번호 설정 ──────────────────────────────
+PASSWORD = "1004"  # ← 원하는 비밀번호로 바꾸세요
+
+def check_password():
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if st.session_state.authenticated:
+        return True
+    st.title('🔒 Brokerage Report Analyzer')
+    pwd = st.text_input('Password', type='password', placeholder='비밀번호를 입력하세요')
+    if st.button('Login'):
+        if pwd == PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error('비밀번호가 틀렸습니다')
+    return False
+
+if not check_password():
+    st.stop()
+
+# ── 이하 메인 앱 ───────────────────────────────
 H = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com/research/company_list.naver'}
 URL = 'https://finance.naver.com/research/company_list.naver'
 UP_KW   = ['상향', '목표주가 상향', 'TP 상향', '상향 조정', '올려', '높여']
@@ -122,6 +144,10 @@ with st.sidebar:
     pages = st.slider('Pages to collect', 1, 20, 10)
     if st.button('🔄 Refresh Data'):
         st.cache_data.clear()
+        st.rerun()
+    st.markdown('---')
+    if st.button('🔓 Logout'):
+        st.session_state.authenticated = False
         st.rerun()
 
 with st.spinner('Collecting reports...'):
