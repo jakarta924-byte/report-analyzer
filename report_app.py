@@ -22,6 +22,16 @@ def detect_change(title):
         if k in title: return 'DOWN'
     return 'KEEP'
 
+def make_stock_url(href):
+    if not href: return ''
+    if href.startswith('http'): return href
+    if href.startswith('/'): return 'https://finance.naver.com' + href
+    return 'https://finance.naver.com/' + href
+
+def make_report_search_url(stock_name):
+    encoded = requests.utils.quote(stock_name)
+    return f'https://finance.naver.com/research/company_list.naver?keyword={encoded}'
+
 def fetch(page):
     try:
         r = requests.get(URL, params={'page': page}, headers=H, timeout=10)
@@ -37,18 +47,25 @@ def fetch(page):
         if len(tds) < 6: continue
         a = tds[0].find('a')
         if not a: continue
-        title = (tds[1].find('a') or tds[1]).get_text(strip=True)
+        stock_name = a.get_text(strip=True)
+        stock_href = a.get('href', '')
+        stock_url  = make_stock_url(stock_href)
+        report_url = make_report_search_url(stock_name)
+        title_tag  = tds[1].find('a')
+        title = title_tag.get_text(strip=True) if title_tag else tds[1].get_text(strip=True)
         tp_raw = tds[3].get_text(strip=True).replace(',','').replace(' ','')
         try: tp = int(tp_raw)
         except: tp = None
         rows.append({
-            'Stock':    a.get_text(strip=True),
-            'Title':    title,
-            'Broker':   tds[2].get_text(strip=True),
-            'Target':   tp,
-            'Opinion':  tds[4].get_text(strip=True),
-            'Date':     tds[5].get_text(strip=True),
-            'Signal':   detect_change(title),
+            'Stock':      stock_name,
+            'Stock_URL':  stock_url,
+            'Title':      title,
+            'Report_URL': report_url,
+            'Broker':     tds[2].get_text(strip=True),
+            'Target':     tp,
+            'Opinion':    tds[4].get_text(strip=True),
+            'Date':       tds[5].get_text(strip=True),
+            'Signal':     detect_change(title),
         })
     return rows
 
@@ -111,11 +128,10 @@ with st.spinner('Collecting reports...'):
     df = load_data(pages)
 
 with st.spinner('Collecting stock prices...'):
-    names_tuple = tuple(df['Stock'].unique().tolist())
-    prices = load_prices(names_tuple)
+    prices = load_prices(tuple(df['Stock'].unique().tolist()))
 
-df['Price']  = df['Stock'].map(prices)
-df['Gap(%)'] = df.apply(
+df['Price']     = df['Stock'].map(prices)
+df['Gap(%)']    = df.apply(
     lambda r: round((r['Target'] - r['Price']) / r['Price'] * 100, 1)
     if pd.notna(r['Target']) and pd.notna(r['Price']) and r['Price'] > 0 else None, axis=1
 )
@@ -128,19 +144,21 @@ with tab1:
     c1, c2 = st.columns(2)
     c1.metric('🔺 UP', f"{len(df_ud[df_ud['Signal']=='UP'])}")
     c2.metric('🔻 DOWN', f"{len(df_ud[df_ud['Signal']=='DOWN'])}")
-
     filt = st.radio('Filter', ['ALL', '🔺 UP only', '🔻 DOWN only'], horizontal=True)
     if filt == '🔺 UP only':
         df_ud = df_ud[df_ud['Signal'] == 'UP']
     elif filt == '🔻 DOWN only':
         df_ud = df_ud[df_ud['Signal'] == 'DOWN']
-
     df_ud = df_ud.sort_values('Gap(%)', ascending=False)
-    show_cols = [c for c in ['Stock','Broker','Target','Price','Gap(%)','Direction','Date','Title'] if c in df_ud.columns]
+    show = [c for c in ['Stock','Stock_URL','Broker','Target','Price','Gap(%)','Direction','Date','Title','Report_URL'] if c in df_ud.columns]
     st.dataframe(
-        df_ud[show_cols].style
+        df_ud[show].style
             .map(color_direction, subset=['Direction'])
             .map(color_gap, subset=['Gap(%)']),
+        column_config={
+            'Stock_URL':  st.column_config.LinkColumn('Stock Link'),
+            'Report_URL': st.column_config.LinkColumn('Reports'),
+        },
         use_container_width=True, height=500
     )
 
@@ -150,23 +168,40 @@ with tab2:
         if len(g) >= 2:
             avg_gap = g['Gap(%)'].mean()
             mc_list.append({
-                'Stock':       s,
-                'Count':       len(g),
-                'Brokers':     ' / '.join(sorted(set(g['Broker']))),
-                'Avg Target':  round(g['Target'].mean(), 0) if g['Target'].notna().any() else None,
-                'Price':       prices.get(s),
-                'Avg Gap(%)':  round(avg_gap, 1) if pd.notna(avg_gap) else None,
-                'Latest Date': g['Date'].max(),
+                'Stock':      s,
+                'Stock_URL':  g['Stock_URL'].iloc[0],
+                'Report_URL': make_report_search_url(s),
+                'Count':      len(g),
+                'Brokers':    ' / '.join(sorted(set(g['Broker']))),
+                'Avg Target': round(g['Target'].mean(), 0) if g['Target'].notna().any() else None,
+                'Price':      prices.get(s),
+                'Avg Gap(%)': round(avg_gap, 1) if pd.notna(avg_gap) else None,
+                'Latest':     g['Date'].max(),
             })
     df_mc = pd.DataFrame(sorted(mc_list, key=lambda x: x['Count'], reverse=True))
     st.metric('Multiple Broker Stocks', f'{len(df_mc)}')
     min_cnt = st.slider('Min broker count', 2, 5, 2)
-    st.dataframe(df_mc[df_mc['Count'] >= min_cnt], use_container_width=True, height=500)
+    st.dataframe(
+        df_mc[df_mc['Count'] >= min_cnt],
+        column_config={
+            'Stock_URL':  st.column_config.LinkColumn('Stock Link'),
+            'Report_URL': st.column_config.LinkColumn('Reports'),
+        },
+        use_container_width=True, height=500
+    )
 
 with tab3:
     search = st.text_input('🔍 Search stock')
-    df_all = df[['Stock','Title','Broker','Target','Price','Gap(%)','Direction','Opinion','Date']].copy()
+    df_all = df.copy()
     if search:
         df_all = df_all[df_all['Stock'].str.contains(search)]
     st.metric('Total Reports', f'{len(df_all)}')
-    st.dataframe(df_all, use_container_width=True, height=500)
+    show_all = [c for c in ['Stock','Stock_URL','Broker','Target','Price','Gap(%)','Direction','Opinion','Date','Title','Report_URL'] if c in df_all.columns]
+    st.dataframe(
+        df_all[show_all],
+        column_config={
+            'Stock_URL':  st.column_config.LinkColumn('Stock Link'),
+            'Report_URL': st.column_config.LinkColumn('Reports'),
+        },
+        use_container_width=True, height=500
+    )
